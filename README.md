@@ -1,261 +1,170 @@
+<div align="center">
+
 # FunCode
 
-> Terminal-native AI coding agent for builders who want speed, structure, and real tool use.
+**Terminal-native AI Coding Agent built with Go.**
 
-[GitHub](https://github.com/perfree/funcode) · [中文](#中文)
+Speed. Structure. Real tool use.
 
-FunCode is an AI coding agent built with Go for the terminal.
-It can read code, inspect projects, call tools, switch roles, delegate work, and show the whole process in a clean TUI.
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[English](README.md) | [中文文档](docs/README_CN.md)
+
+</div>
 
 ---
 
-## What Is FunCode
+## What is FunCode?
 
-FunCode is built for workflows like:
-
-- understanding an unfamiliar codebase fast
-- switching between roles like `developer` and `architect`
-- reading files, editing code, and running tasks in the terminal
-- extending behavior with `SKILL.md`
-- watching tool calls, streaming output, and role collaboration in real time
+FunCode is an AI coding agent that runs in your terminal. It doesn't just chat — it reads your code, calls tools, switches between roles, delegates tasks, and shows the entire process in a real-time TUI.
 
 **FunCode = a real tool-using AI development assistant, not just a chat box.**
 
----
+## Features
 
-## Highlights
-
-- Multi-role collaboration
-- Tool-driven execution
-- TUI + simple CLI mode
-- `SKILL.md` support
-- Streaming UI with live blocks and timing
-- Configurable models, roles, prompts, and permissions
-
----
+- **Multi-Role Collaboration** — Switch between roles like `developer` and `architect` with `@role`, delegate and collaborate across agents
+- **Built-in Tools** — Read, write, edit, delete files, run shell commands, grep, glob, diff, patch, and more
+- **Interactive TUI** — Streaming output, tool execution blocks, role activity display, and status bar powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- **Simple CLI Mode** — Lightweight mode for debugging or IDE integration (`--simple`)
+- **Multi-Provider LLM** — Supports OpenAI, Anthropic, Google Gemini, and Ollama
+- **Skill System** — Extend capabilities with `SKILL.md` files
+- **MCP Support** — Model Context Protocol integration
+- **Conversation Persistence** — SQLite-based history with `--resume` to continue previous sessions
+- **Fine-grained Permissions** — Control tool access with `allow` / `deny` / `ask` per tool
+- **Cross-Platform** — Builds for Windows, Linux, and macOS (amd64 & arm64)
 
 ## Quick Start
 
-### 1. Clone
+### Prerequisites
+
+- [Go](https://go.dev/dl/) 1.24 or later
+
+### Install
 
 ```bash
 git clone https://github.com/perfree/funcode.git
 cd funcode
+make build
 ```
 
-### 2. Build
+The binary will be output to `dist/funcode`.
+
+### Run
 
 ```bash
-go build ./cmd/funcode
+./dist/funcode
 ```
 
-### 3. Run
+On first launch, FunCode will guide you through an interactive setup to configure your model and API key.
+
+### Usage
 
 ```bash
-go run ./cmd/funcode/
+funcode                          # Start with TUI mode (default)
+funcode --simple                 # Start in simple CLI mode
+funcode --model gpt-4            # Specify a model
+funcode --role architect         # Start with a specific role
+funcode --resume                 # Resume the last conversation
+funcode --config path/to/config  # Use a custom config file
 ```
-
-On first launch, FunCode will guide you through setup.
-
----
 
 ## Configuration
 
-Default paths:
+FunCode uses YAML configuration files:
 
-- Global config: `~/.funcode/`
-- Project config: `.funcode/`
+| Path | Scope |
+|------|-------|
+| `~/.funcode/config.yaml` | Global (user-level) |
+| `.funcode/config.yaml` | Project-level |
 
-You can configure:
+### Example
 
-- model and provider
-- `base_url`
-- roles
-- prompt files
-- tool permissions
-- skills
+```yaml
+models:
+  - name: "gpt-4"
+    provider: "openai"
+    model: "gpt-4"
+    api_key: "sk-xxxx"
+    base_url: "https://api.openai.com/v1"
+    max_tokens: 8192
 
----
+roles:
+  - name: "developer"
+    description: "Senior developer for coding tasks"
+    model: "gpt-4"
+    tools: ["*"]
+    prompt_file: "prompts/developer.md"
 
-## Examples
+  - name: "architect"
+    description: "Software architect for design and review"
+    model: "gpt-4"
+    tools: ["Tree", "Read", "ReadRange", "Glob", "Grep", "Diff"]
+    prompt_file: "prompts/architect.md"
 
-```text
-Let @architect inspect the project and give me a summary
+default_role: "developer"
+
+permissions:
+  - tool: "Read"
+    action: "allow"
+  - tool: "Bash"
+    action: "ask"
+  - tool: "Write"
+    action: "ask"
+
+settings:
+  theme: "dark"
+  markdown_render: true
+  auto_compact: true
 ```
 
-```text
-Check the current repo structure, then fix the startup error
+## Built-in Tools
+
+| Tool | Description | Default Permission |
+|------|-------------|-------------------|
+| Bash | Execute shell commands | ask |
+| Read | Read file contents | allow |
+| Write | Create new files | ask |
+| Edit | Edit existing files | ask |
+| Delete | Delete files | ask |
+| Glob | File pattern matching | allow |
+| Grep | Search file contents | allow |
+| Tree | Display directory tree | allow |
+| Diff | Compare file differences | allow |
+| Patch | Apply patches | ask |
+| Delegate | Delegate tasks to other roles | ask |
+| Collaborate | Multi-agent parallel execution | ask |
+
+## Project Structure
+
+```
+funcode/
+├── cmd/funcode/          # Entry point
+├── internal/
+│   ├── agent/            # Agent core (roles, memory, collaboration)
+│   ├── tool/             # Tool system and built-in tools
+│   ├── llm/              # LLM providers (OpenAI, Anthropic, Google, Ollama)
+│   ├── config/           # Configuration management
+│   ├── tui/              # Terminal UI (Bubble Tea)
+│   ├── skill/            # Skill system
+│   ├── conversation/     # Conversation persistence (SQLite)
+│   ├── mcp/              # MCP protocol support
+│   └── plan/             # Planning module
+├── configs/              # Example configs and prompt files
+├── Makefile
+└── go.mod
 ```
 
-```text
-Use Agent in parallel to inspect README and go.mod
-```
-
----
-
-## Run Modes
-
-### TUI
-
-Best for daily use:
-
-- streaming output
-- tool blocks
-- role collaboration blocks
-- status line
-
-### Simple
-
-Best for debugging or IDE runs:
+## Build
 
 ```bash
-go run ./cmd/funcode/ --simple
+make build          # Build for current platform
+make build-all      # Build for all platforms (Windows/Linux/macOS)
+make run            # Run directly
+make test           # Run tests
+make clean          # Clean build output
 ```
-
----
-
-## Philosophy
-
-FunCode focuses on:
-
-- real coding workflows
-- clear multi-role collaboration
-- dense terminal feedback
-- less ceremony, more action
-
----
 
 ## License
 
-See repository for license details.
-
----
-
-## 中文
-
-[English](#funcode)
-
-FunCode 是一个基于 Go 构建的终端 AI Coding Agent。
-它不只是聊天，而是真的可以读代码、看项目、调用工具、切换角色、委托协作，并把整个过程用 TUI 展示出来。
-
----
-
-## FunCode 是什么
-
-它适合这些场景：
-
-- 快速看懂一个陌生项目
-- 在 `developer`、`architect` 等角色之间切换协作
-- 在终端里直接读文件、改代码、执行任务
-- 用 `SKILL.md` 扩展能力
-- 实时观察工具调用、流式输出和角色协作过程
-
-**FunCode = 一个真正会调用工具的 AI 开发助手，而不只是一个聊天框。**
-
----
-
-## 特性
-
-- 多角色协作
-- 工具驱动执行
-- TUI + simple CLI 模式
-- 支持 `SKILL.md`
-- 支持流式 UI、实时块和耗时展示
-- 模型、角色、提示词、权限均可配置
-
----
-
-## 快速开始
-
-### 1. 克隆项目
-
-```bash
-git clone https://github.com/perfree/funcode.git
-cd funcode
-```
-
-### 2. 构建
-
-```bash
-go build ./cmd/funcode
-```
-
-### 3. 运行
-
-```bash
-go run ./cmd/funcode/
-```
-
-首次启动时，FunCode 会引导你完成基础配置。
-
----
-
-## 配置目录
-
-默认路径：
-
-- 全局配置：`~/.funcode/`
-- 项目配置：`.funcode/`
-
-可配置内容包括：
-
-- 模型和 provider
-- `base_url`
-- 角色
-- prompt 文件
-- 工具权限
-- skills
-
----
-
-## 示例
-
-```text
-让@architect 看下项目，总结一下
-```
-
-```text
-检查当前仓库结构，然后修复启动报错
-```
-
-```text
-请并行使用 Agent 分析 README 和 go.mod
-```
-
----
-
-## 运行模式
-
-### TUI
-
-适合日常使用：
-
-- 流式输出
-- 工具块展示
-- 角色协作块
-- 底部状态栏
-
-### Simple
-
-适合调试或在 IDE 中直接运行：
-
-```bash
-go run ./cmd/funcode/ --simple
-```
-
----
-
-## 设计方向
-
-FunCode 关注的是：
-
-- 真正可执行的 coding workflow
-- 清晰的多角色协作体验
-- 终端中的高密度反馈
-- 少废话，多行动
-
----
-
-## License
-
-许可证信息请以仓库实际内容为准。
+This project is licensed under the [MIT License](LICENSE).

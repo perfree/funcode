@@ -50,6 +50,7 @@ type AllAgentDoneMsg struct {
 	Response string
 	Error    error
 	Elapsed  time.Duration
+	Usage    types.Usage
 }
 
 // AllBroadcastCompleteMsg signals all @all agents finished
@@ -110,6 +111,8 @@ type LiveToolBlock struct {
 	StartedAt  time.Time
 }
 
+const mainUsageKey = "__main__"
+
 // ── Model ───────────────────────────────────────────────────
 
 type Model struct {
@@ -166,12 +169,15 @@ type Model struct {
 	lastTurnNeedsSeparator     bool // separator deferred until next turn
 	currentRunStartedAt        time.Time
 
-	skillManager     *skill.Manager
-	activeSkill      *skill.Skill
-	pendingSubmit    bool
-	pendingSubmitSeq int
-	toolStartTimes   map[string]time.Time
-	liveToolBlocks   []LiveToolBlock
+	skillManager        *skill.Manager
+	activeSkill         *skill.Skill
+	pendingSubmit       bool
+	pendingSubmitSeq    int
+	toolStartTimes      map[string]time.Time
+	activeUsages        map[string]types.Usage
+	turnEstimatedTokens int
+	turnHasRealUsage    bool
+	liveToolBlocks      []LiveToolBlock
 }
 
 func New(orchestrator *agent.Orchestrator, modelName string, markdownRender bool, skillManager *skill.Manager) Model {
@@ -195,6 +201,7 @@ func New(orchestrator *agent.Orchestrator, modelName string, markdownRender bool
 		historyCursor:      -1,
 		skillManager:       skillManager,
 		toolStartTimes:     map[string]time.Time{},
+		activeUsages:       map[string]types.Usage{},
 	}
 }
 
@@ -464,11 +471,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StreamChunkMsg:
 		if msg.Event.Type == types.EventTextDelta {
 			m.streamBuf += msg.Event.Content
-			m.totalTokens += (len(msg.Event.Content) + 3) / 4
+			m.addEstimatedTokens(msg.Event.Content)
 			if m.autoScroll {
 				m.scrollBack = 0
 			}
 		}
+		m.handleUsageEvent(mainUsageKey, msg.Event)
 		if msg.Event.Type == types.EventError && msg.Event.Error != "" {
 			// Print retry/error info immediately to conversation
 			errLine := m.theme.ToolErr.Render("  " + msg.Event.Error)
@@ -485,14 +493,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, printTranscriptCmd(errLine)
 		}
-		if msg.Event.Usage != nil {
-			m.totalTokens = msg.Event.Usage.TotalTokens
-		}
 		return m, nil
 
 	case ToolCallMsg:
-		// Count tool call params as tokens
-		m.totalTokens += estimateTokens(msg.Call.Params)
 		startedAt := m.rememberToolStart(msg.Call.ID)
 		// Flush pending stream text to messages
 		var flushedMsg *ChatMessage
@@ -543,8 +546,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.printAssistantTranscriptCmd(toolMsg), cmd)
 
 	case ToolResultMsg:
-		// Count tool result content as tokens
-		m.totalTokens += estimateTokens(msg.Result.Content)
 		elapsed := m.finishTool(msg.Call.ID)
 		duration := formatElapsed(elapsed)
 		if isFileToolCall(msg.Call) {
@@ -666,6 +667,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DelegateStreamMsg:
 		m.handleLiveToolStream(msg.ParentCallID, msg.Event)
+		m.handleUsageEvent(msg.ParentCallID, msg.Event)
 		if msg.Event.Type == types.EventTextDelta && m.autoScroll {
 			m.scrollBack = 0
 		}
@@ -683,12 +685,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentStreamMsg:
 		m.handleLiveToolStream(msg.ParentCallID, msg.Event)
+		m.handleUsageEvent(msg.ParentCallID, msg.Event)
 		if msg.Event.Type == types.EventTextDelta && m.autoScroll {
 			m.scrollBack = 0
 		}
 		return m, nil
 
 	case AgentDoneMsg:
+		m.flushEstimatedTokensIfNeeded()
 		m.streaming = false
 		m.spinner.Stop()
 		m.input.Focus()
@@ -723,7 +727,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.printAssistantTranscriptCmd(outMsg)
 
 	case AllAgentDoneMsg:
-		m.totalTokens += estimateTokens(msg.Response)
+		if msg.Usage.TotalTokens <= 0 {
+			m.totalTokens += estimateTokens(msg.Response)
+		}
+		m.addUsage(msg.Usage)
 		roleName := msg.RoleName
 		var outMsg ChatMessage
 		if msg.Error != nil {
@@ -789,6 +796,7 @@ func (m *Model) startAgent(a *agent.Agent, input string, active *skill.Skill) (M
 	m.streamBuf = ""
 	m.input.Blur()
 	m.currentRunStartedAt = time.Now()
+	m.resetTurnUsage()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
@@ -836,6 +844,7 @@ func (m *Model) handleAllBroadcast(input string) (Model, tea.Cmd) {
 	m.input.Blur()
 	m.allPending = len(agents)
 	m.currentRunStartedAt = time.Now()
+	m.resetTurnUsage()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
@@ -858,6 +867,12 @@ func (m *Model) handleAllBroadcast(input string) (Model, tea.Cmd) {
 			}
 			// Each agent gets isolated memory for this call
 			subAgent := ag.CloneIsolated(ag.ID)
+			var usage types.Usage
+			subAgent.OnStream = func(event types.StreamEvent) {
+				if event.Usage != nil {
+					usage = *event.Usage
+				}
+			}
 			response, err := skill.RunWithSkill(ctx, subAgent, cleanInput, activeSkill)
 			if pRef.p != nil {
 				pRef.p.Send(AllAgentDoneMsg{
@@ -865,6 +880,7 @@ func (m *Model) handleAllBroadcast(input string) (Model, tea.Cmd) {
 					Response: response,
 					Error:    err,
 					Elapsed:  time.Since(startedAt),
+					Usage:    usage,
 				})
 			}
 		}(a)
@@ -1057,7 +1073,6 @@ func (m Model) handleSkillCommand(cmd skill.Command) (tea.Model, tea.Cmd) {
 		}
 		m.messages = append(m.messages, userMsg)
 		m.totalMsgs = len(m.messages)
-		m.totalTokens += estimateTokens(cmd.Task)
 
 		targetAgent, cleanInput := m.orchestrator.Route(cmd.Task)
 		if targetAgent == nil {
@@ -1402,6 +1417,53 @@ func renderCollapsedTailResult(theme *Theme, text string, width int, maxLines in
 	return head + "\n" + renderFullResult(theme, visible, width)
 }
 
+func (m *Model) resetTurnUsage() {
+	if m.activeUsages == nil {
+		m.activeUsages = map[string]types.Usage{}
+	}
+	m.activeUsages = map[string]types.Usage{}
+	m.turnEstimatedTokens = 0
+	m.turnHasRealUsage = false
+}
+
+func (m *Model) handleUsageEvent(key string, event types.StreamEvent) {
+	if key == "" {
+		return
+	}
+	if m.activeUsages == nil {
+		m.activeUsages = map[string]types.Usage{}
+	}
+	if event.Usage != nil {
+		m.activeUsages[key] = *event.Usage
+	}
+	if event.Type == types.EventDone {
+		if usage, ok := m.activeUsages[key]; ok {
+			m.addUsage(usage)
+			delete(m.activeUsages, key)
+		}
+	}
+}
+
+func (m *Model) addUsage(usage types.Usage) {
+	if usage.TotalTokens <= 0 && usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
+		return
+	}
+	m.turnHasRealUsage = true
+	m.totalTokens += usage.TotalTokens
+}
+
+func (m *Model) addEstimatedTokens(text string) {
+	m.turnEstimatedTokens += estimateTokens(text)
+}
+
+func (m *Model) flushEstimatedTokensIfNeeded() {
+	if m.turnHasRealUsage || len(m.activeUsages) > 0 || m.turnEstimatedTokens <= 0 {
+		return
+	}
+	m.totalTokens += m.turnEstimatedTokens
+	m.turnEstimatedTokens = 0
+}
+
 func (m Model) renderStatusLine() string {
 	t := m.theme
 	skillName := "none"
@@ -1517,7 +1579,6 @@ func (m Model) submitCurrentInput() (tea.Model, tea.Cmd) {
 	}
 	m.messages = append(m.messages, userMsg)
 	m.totalMsgs = len(m.messages)
-	m.totalTokens += estimateTokens(input)
 
 	if m.orchestrator.IsAllMention(input) {
 		next, cmd := m.handleAllBroadcast(input)
@@ -1764,7 +1825,7 @@ func (m *Model) handleLiveToolStream(callID string, event types.StreamEvent) {
 	switch event.Type {
 	case types.EventTextDelta:
 		m.appendLiveToolStream(callID, event.Content)
-		m.totalTokens += estimateTokens(event.Content)
+		m.addEstimatedTokens(event.Content)
 	case types.EventError:
 		m.appendLiveToolError(callID, event.Error)
 	}

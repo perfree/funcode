@@ -14,10 +14,11 @@ import (
 
 // Provider implements llm.Provider for OpenAI and compatible APIs
 type Provider struct {
-	client       *openailib.Client
-	name         string
-	model        string
-	capabilities llm.ProviderCapabilities
+	client              *openailib.Client
+	name                string
+	model               string
+	capabilities        llm.ProviderCapabilities
+	supportsStreamUsage bool
 }
 
 // NewProvider creates an OpenAI provider
@@ -37,10 +38,11 @@ func NewProvider(cfg *llm.ProviderConfig) (llm.Provider, error) {
 	}
 
 	return &Provider{
-		client:       openailib.NewClientWithConfig(config),
-		name:         name,
-		model:        cfg.Model,
-		capabilities: llm.DefaultCapabilities(),
+		client:              openailib.NewClientWithConfig(config),
+		name:                name,
+		model:               cfg.Model,
+		capabilities:        llm.DefaultCapabilities(),
+		supportsStreamUsage: true,
 	}, nil
 }
 
@@ -55,6 +57,7 @@ func NewCompatibleProvider(cfg *llm.ProviderConfig) (llm.Provider, error) {
 	}
 	if typed, ok := provider.(*Provider); ok {
 		typed.capabilities = llm.OpenAICompatibleCapabilities()
+		typed.supportsStreamUsage = false
 	}
 	return provider, nil
 }
@@ -93,6 +96,11 @@ func (p *Provider) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.ChatRes
 func (p *Provider) ChatStream(ctx context.Context, req *llm.ChatRequest) (llm.Stream, error) {
 	openaiReq := p.buildRequest(req)
 	openaiReq.Stream = true
+	if p.supportsStreamUsage {
+		openaiReq.StreamOptions = &openailib.StreamOptions{
+			IncludeUsage: true,
+		}
+	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, openaiReq)
 	if err != nil {

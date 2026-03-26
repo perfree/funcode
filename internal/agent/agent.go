@@ -323,7 +323,7 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 			}
 
 			// Process stream and collect response
-			response, toolCalls, err = a.processStream(stream)
+			response, toolCalls, _, err = a.processStream(stream)
 			if err != nil {
 				lastErr = err
 				if ctx.Err() != nil {
@@ -374,7 +374,7 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 					continue
 				}
 				logger.Warn("model returned empty response after streaming retries, falling back to non-streaming chat", "agent_id", a.ID, "recovery_attempts", emptyResponseRecoveries)
-				fallbackResponse, fallbackToolCalls, fallbackErr := a.fallbackChatOnce(ctx, req)
+				fallbackResponse, fallbackToolCalls, _, fallbackErr := a.fallbackChatOnce(ctx, req)
 				if fallbackErr != nil {
 					logger.Error("fallback chat failed", "agent_id", a.ID, "error", fallbackErr, "recovery_attempts", emptyResponseRecoveries)
 					return "", fmt.Errorf("model returned an empty response after %d recovery attempt(s): %w", emptyResponseRecoveries, fallbackErr)
@@ -496,25 +496,39 @@ func (a *Agent) mustRunSerial(call types.ToolCall) bool {
 }
 
 // processStream reads the stream and collects text + tool calls
-func (a *Agent) processStream(stream llm.Stream) (string, []types.ToolCall, error) {
+func (a *Agent) processStream(stream llm.Stream) (string, []types.ToolCall, types.Usage, error) {
 	defer stream.Close()
 
 	var text string
 	var toolCalls []types.ToolCall
 	var currentToolCall *types.ToolCall
+	var usage types.Usage
 
 	for {
 		event, err := stream.Next()
 		if err != nil {
 			if err == io.EOF {
+				if event.Usage != nil {
+					usage = *event.Usage
+				}
+				if a.OnStream != nil && event.Type != "" {
+					a.OnStream(event)
+				}
+				if event.Type == types.EventDone && currentToolCall != nil {
+					toolCalls = append(toolCalls, *currentToolCall)
+					currentToolCall = nil
+				}
 				break
 			}
-			return text, toolCalls, err
+			return text, toolCalls, usage, err
 		}
 
 		// Fire stream callback
 		if a.OnStream != nil {
 			a.OnStream(event)
+		}
+		if event.Usage != nil {
+			usage = *event.Usage
 		}
 
 		switch event.Type {
@@ -549,7 +563,7 @@ func (a *Agent) processStream(stream llm.Stream) (string, []types.ToolCall, erro
 			}
 
 		case types.EventError:
-			return text, toolCalls, fmt.Errorf("stream error: %s", event.Error)
+			return text, toolCalls, usage, fmt.Errorf("stream error: %s", event.Error)
 		}
 	}
 
@@ -558,17 +572,24 @@ func (a *Agent) processStream(stream llm.Stream) (string, []types.ToolCall, erro
 		toolCalls = append(toolCalls, *currentToolCall)
 	}
 
-	return text, toolCalls, nil
+	return text, toolCalls, usage, nil
 }
 
-func (a *Agent) fallbackChatOnce(ctx context.Context, req *llm.ChatRequest) (string, []types.ToolCall, error) {
+func (a *Agent) fallbackChatOnce(ctx context.Context, req *llm.ChatRequest) (string, []types.ToolCall, types.Usage, error) {
 	resp, err := a.Provider.Chat(ctx, req)
 	if err != nil {
-		return "", nil, fmt.Errorf("fallback non-stream chat failed: %w", err)
+		return "", nil, types.Usage{}, fmt.Errorf("fallback non-stream chat failed: %w", err)
+	}
+	if a.OnStream != nil {
+		usage := resp.Usage
+		a.OnStream(types.StreamEvent{
+			Type:  types.EventDone,
+			Usage: &usage,
+		})
 	}
 	text := strings.TrimSpace(resp.Message.GetText())
 	toolCalls := resp.Message.GetToolCalls()
-	return text, toolCalls, nil
+	return text, toolCalls, resp.Usage, nil
 }
 
 // buildAssistantMessage creates an assistant message from response text and tool calls
