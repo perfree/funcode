@@ -1,0 +1,45 @@
+models:
+  - name: "gpt-5.3-codex"
+    provider: "openai"
+    model: "gpt-5.3-codex"
+    api_key: "sk-0cf4da8edfc60e723694b587d3c7d6c34d4eb73d6a21c4780c12a89eac053c08"
+    base_url: "https://ai.qaq.al/v1"
+    max_tokens: 8192
+
+roles:
+  - name: "developer"
+    description: "高级开发工程师，处理编码任务"
+    model: "gpt-5.3-codex"
+    tools: ["*"]
+    prompt_file: "prompts/developer.md"
+
+  - name: "architect"
+    description: "软件架构师，设计系统和评审架构"
+    model: "gpt-5.3-codex"
+    tools: ["Tree", "Read", "ReadRange", "Glob", "Grep", "Diff"]
+    prompt_file: "prompts/architect.md"
+
+default_role: "developer"
+
+permissions:
+  - tool: "Read"
+    action: "allow"
+  - tool: "Glob"
+    action: "allow"
+  - tool: "Grep"
+    action: "allow"
+  - tool: "Bash"
+    action: "ask"
+  - tool: "Write"
+    action: "ask"
+  - tool: "Edit"
+    action: "ask"
+  - tool: "Delete"
+    action: "ask"
+
+settings:
+  theme: "dark"
+  markdown_render: true
+  auto_compact: true
+  compact_threshold: 50000
+  plan_auto_approve: false
