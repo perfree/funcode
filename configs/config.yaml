@@ -2,7 +2,7 @@ models:
   - name: "gpt-5.3-codex"
     provider: "openai"
     model: "gpt-5.3-codex"
-    api_key: "sk-0cf4da8edfc60e723694b587d3c7d6c34d4eb73d6a21c4780c12a89eac053c08"
+    api_key: "sk-xxxx"
     base_url: "https://ai.qaq.al/v1"
     max_tokens: 8192
 
