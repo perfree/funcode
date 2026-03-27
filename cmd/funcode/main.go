@@ -66,7 +66,12 @@ func runApp(cmd *cobra.Command, args []string) error {
 	var cfg *config.Config
 	var err error
 
-	if !config.ConfigExists() {
+	if flagConfig != "" {
+		cfg, err = config.LoadFromPath(flagConfig)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+	} else if !config.ConfigExists() {
 		cfg, err = config.RunSetup()
 		if err != nil {
 			return fmt.Errorf("setup failed: %w", err)

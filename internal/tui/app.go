@@ -185,14 +185,28 @@ func New(orchestrator *agent.Orchestrator, modelName string, markdownRender bool
 	theme := DefaultTheme()
 	input := NewInput("  > ")
 	input.MentionStyle = theme.MentionHighlight
+	currentRole := ""
+	currentRoleDisplay := ""
+	if defaultAgent := orchestrator.GetDefaultAgent(); defaultAgent != nil {
+		currentRole = defaultAgent.ID
+		currentRoleDisplay = defaultAgent.ID
+		if defaultAgent.Role != nil {
+			if defaultAgent.Role.Name != "" {
+				currentRoleDisplay = defaultAgent.Role.Name
+			}
+			if defaultAgent.Role.Config.Name != "" {
+				currentRoleDisplay = defaultAgent.Role.Config.Name
+			}
+		}
+	}
 	return Model{
 		input:              input,
 		spinner:            NewSpinner(),
 		theme:              theme,
 		orchestrator:       orchestrator,
 		modelName:          modelName,
-		currentRole:        "developer",
-		currentRoleDisplay: "Developer",
+		currentRole:        currentRole,
+		currentRoleDisplay: currentRoleDisplay,
 		showWelcome:        true,
 		autoScroll:         true,
 		pRef:               &programRef{},

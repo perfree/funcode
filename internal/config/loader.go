@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,18 +12,32 @@ import (
 
 // Load loads configuration from all sources
 func Load() (*Config, error) {
-	cfg := DefaultConfig()
+	return load(DefaultConfig(), defaultConfigPaths())
+}
 
-	// 1. Load global config
-	globalDir := GlobalConfigDir()
-	if err := loadFromDir(globalDir, cfg); err != nil {
-		_ = err
+// LoadFromPath loads configuration from an explicit file path.
+func LoadFromPath(configPath string) (*Config, error) {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return Load()
 	}
 
-	// 2. Load project config (overrides global)
-	projectDir := ProjectConfigDir()
-	if err := loadFromDir(projectDir, cfg); err != nil {
-		_ = err
+	absPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving config path %s: %w", configPath, err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return nil, fmt.Errorf("stat config %s: %w", absPath, err)
+	}
+
+	return load(DefaultConfig(), []string{absPath})
+}
+
+func load(cfg *Config, configPaths []string) (*Config, error) {
+	for _, configPath := range configPaths {
+		if err := loadFromFile(configPath, cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	// 3. Apply environment variable overrides
@@ -39,10 +54,19 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func loadFromDir(dir string, cfg *Config) error {
-	configPath := filepath.Join(dir, "config.yaml")
+func defaultConfigPaths() []string {
+	return []string{
+		filepath.Join(GlobalConfigDir(), "config.yaml"),
+		filepath.Join(ProjectConfigDir(), "config.yaml"),
+	}
+}
+
+func loadFromFile(configPath string, cfg *Config) error {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return nil
+	}
+	if err := validateYAMLIndentation(configPath); err != nil {
+		return err
 	}
 
 	v := viper.New()
@@ -58,11 +82,33 @@ func loadFromDir(dir string, cfg *Config) error {
 	}
 
 	if v.IsSet("roles") {
-		if err := loadRolePrompts(cfg, dir); err != nil {
+		baseDir := filepath.Dir(configPath)
+		if err := loadRolePrompts(cfg, baseDir); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func validateYAMLIndentation(configPath string) error {
+	f, err := os.Open(configPath)
+	if err != nil {
+		return fmt.Errorf("opening config %s: %w", configPath, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for lineNo := 1; scanner.Scan(); lineNo++ {
+		line := scanner.Text()
+		prefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		if strings.Contains(prefix, "\t") {
+			return fmt.Errorf("config %s line %d uses tab indentation; YAML indentation must use spaces", configPath, lineNo)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("reading config %s: %w", configPath, err)
+	}
 	return nil
 }
 
@@ -160,11 +206,14 @@ func validateConfig(cfg *Config) error {
 	return nil
 }
 
-// ConfigExists checks if the global config file exists
+// ConfigExists checks if any default config file exists.
 func ConfigExists() bool {
-	configPath := filepath.Join(GlobalConfigDir(), "config.yaml")
-	_, err := os.Stat(configPath)
-	return err == nil
+	for _, configPath := range defaultConfigPaths() {
+		if _, err := os.Stat(configPath); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureConfigDirs creates the necessary config directories
