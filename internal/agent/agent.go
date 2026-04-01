@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -39,6 +40,8 @@ type Agent struct {
 	OnStream     StreamCallback
 	OnToolCall   func(call types.ToolCall)
 	OnToolResult func(call types.ToolCall, result types.ToolResult)
+
+	hintEngine *HintEngine
 
 	runtimeMu          sync.RWMutex
 	activeExtraContext string
@@ -79,6 +82,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		BaseSystemPrompt: systemPrompt,
 		SystemPrompt:     systemPrompt,
 		TeamRoles:        cfg.TeamRoles,
+		hintEngine:       NewHintEngine(),
 	}
 
 	// Inject tool usage instructions into the system prompt
@@ -95,80 +99,89 @@ func (a *Agent) buildFullSystemPrompt() string {
 	var b strings.Builder
 	b.WriteString(a.BaseSystemPrompt)
 
-	// Inject environment info
+	// --- Environment ---
 	cwd, _ := os.Getwd()
 	b.WriteString("\n\n## Environment\n\n")
 	b.WriteString(fmt.Sprintf("- OS: %s/%s\n", runtime.GOOS, runtime.GOARCH))
 	b.WriteString(fmt.Sprintf("- Working Directory: %s\n", cwd))
 	if runtime.GOOS == "windows" {
-		b.WriteString("- Shell: cmd.exe (use Windows commands like `dir`, `type`, NOT `ls`, `cat`)\n")
+		b.WriteString("- Shell: cmd.exe\n")
 		b.WriteString("- Path separator: \\ (backslash)\n")
 	} else {
 		b.WriteString("- Shell: bash\n")
 		b.WriteString("- Path separator: / (forward slash)\n")
 	}
-	b.WriteString("- You can access ANY absolute path on this machine. You are NOT limited to the working directory.\n")
-	b.WriteString("- When the user gives you a path like `E:\\other\\test`, you MUST directly use tools (Read, Glob, Write, etc.) on that path. Do NOT say you cannot access it.\n")
+	b.WriteString("- You can access ANY absolute path on this machine.\n")
 
+	// --- Project instructions ---
+	if instructions := loadProjectInstructions(cwd); instructions != "" {
+		b.WriteString("\n## Project Instructions\n\n")
+		b.WriteString(instructions)
+		b.WriteString("\n")
+	}
+
+	// --- Core behaviors ---
+	b.WriteString(`
+## How to Work
+
+### Exploration — understand before you act
+A directory tree alone is NEVER enough to understand a project. You MUST read actual source code.
+
+**Required exploration depth:**
+1. Tree to see the layout — this is only step ONE, not the answer.
+2. Read the entry point (main.go, index.ts, etc.) and key configuration files.
+3. Read 3-5 core source files to understand the real architecture, patterns, and code quality.
+4. Use Grep to trace how key functions are called, how modules connect, and how data flows.
+5. Only AFTER reading real code should you provide analysis or make changes.
+
+**When the user asks you to "look at", "review", "analyze", or "understand" a project or codebase:**
+- You MUST read actual source files, not just list the directory structure.
+- Read at minimum: the entry point, the most important module, and any file the user specifically mentioned.
+- Base your analysis on what the code actually does, not what the file names suggest.
+
+**Tracing and following code:**
+- When you see a function call, find its definition. When you see a type, find where it's declared.
+- Use Grep to follow import chains and call graphs across files.
+- If a search returns too many results, narrow with glob filters. If too few, broaden the search.
+- Keep exploring until you have genuine understanding, not surface-level guesses.
+
+**Before editing:** You MUST Read the target file first. Never edit a file you haven't read in this conversation.
+
+### Doing tasks — act, don't narrate
+- ALWAYS call tools directly in your response. NEVER reply with just a description of what you plan to do. If you want to read a file — call Read now. If you want to explore — call Tree and Read now.
+- Use the provided tools to act — do NOT just output code as text when the user wants real changes.
+- Prefer dedicated tools over Bash: Read over cat, Glob over ls/find, Grep over grep/findstr.
+- Only use Bash for system commands (build, test, git, install, etc.) that have no dedicated tool.
+- Prefer editing existing files over creating new ones. Don't create unnecessary files.
+- Match the existing code style. Don't add features, refactoring, comments, or type annotations beyond what was asked.
+- Be careful with destructive operations (delete, overwrite, force-push). Verify paths with Glob/Read first.
+- When an error occurs, read the error message and diagnose the root cause. Don't blindly retry the same action.
+
+### Delegation — act, don't describe
+- When you decide to delegate work to another role, you MUST call the Delegate tool immediately in the SAME response. NEVER just describe what you would delegate — execute it.
+- When the user asks you to have another role do something (e.g., "let the architect review this"), call the Delegate tool right away. Do not reply with a plan of what you will delegate — just do it.
+- If a task needs multiple roles, use the Collaborate tool to coordinate them in parallel.
+
+### Output style
+- Be concise and direct. Lead with the answer or action, not the reasoning.
+- For complex tasks, give brief progress updates at natural milestones.
+- Show errors and blockers immediately — don't hide them.
+`)
+
+	// --- Tools ---
 	if len(a.Tools) > 0 {
-		b.WriteString("\n## Available Tools\n\n")
-		b.WriteString("You MUST use the provided tools to complete tasks. ")
-		b.WriteString("When the user asks you to create, edit, or read files, run commands, or search code, ")
-		b.WriteString("you MUST call the appropriate tool function — do NOT just output the content as text.\n\n")
-		b.WriteString("**Important rules:**\n")
-		b.WriteString("- To read a whole file or check if it exists → use the **Read** tool (NOT Bash with cat/type)\n")
-		b.WriteString("- To read only a specific code section → use the **ReadRange** tool\n")
-		b.WriteString("- To inspect project structure quickly → use the **Tree** tool\n")
-		b.WriteString("- To list/search files in a directory → use the **Glob** tool (NOT Bash with ls/dir)\n")
-		b.WriteString("- To search file contents → use the **Grep** tool (NOT Bash with grep/findstr)\n")
-		b.WriteString("- To create a new file → use the **Write** tool\n")
-		b.WriteString("- To modify an existing file → use the **Edit** tool (string mode with old_string/new_string, or line mode with line_start/line_end)\n")
-		b.WriteString("- To apply a multi-hunk unified diff → use the **Patch** tool\n")
-		b.WriteString("- To inspect current git changes → use the **Diff** tool\n")
-		b.WriteString("- To run build/test/lint/verify tasks → prefer the **RunTask** tool\n")
-		b.WriteString("- To run arbitrary shell commands (build, test, git, etc.) when no better structured tool fits → use the **Bash** tool\n")
-		b.WriteString("- To delete a file → use the **Delete** tool (ALWAYS use Glob first to verify the path)\n")
-		b.WriteString("- ALWAYS prefer Tree/Read/ReadRange/Glob/Grep/Diff over Bash for inspection tasks — they are faster and safer\n\n")
+		b.WriteString("## Tools\n\n")
 
-		// Team delegation guidance
+		// Team delegation
 		if len(a.TeamRoles) > 0 {
-			b.WriteString("**Team collaboration:**\n")
-			b.WriteString("You have a **Delegate** tool to ask other specialist roles for help. ")
-			b.WriteString("Decide first whether you should inspect the project yourself or delegate immediately. ")
-			b.WriteString("If the user explicitly wants another role to inspect/analyze/review the project, and does NOT ask you to evaluate it first, ")
-			b.WriteString("delegate directly with a concise task instead of reading files yourself. ")
-			b.WriteString("Only gather context first when your own analysis is required before delegation, or when you already know a small amount of high-value context that will materially help the delegate.\n\n")
-			b.WriteString("Pass concise context only when it is truly useful. Do NOT paste long tree listings, large file summaries, or redundant observations if the delegate can inspect the repo directly.\n\n")
-			b.WriteString("Preferred workflow for explicit role requests: Brief acknowledgement → Delegate directly → Wait for delegate result → Summarize the delegate's findings for the user.\n\n")
-			b.WriteString("Your team members:\n")
+			b.WriteString("**Team:** You can Delegate to specialist roles. Delegate directly when another role is more appropriate — don't ask permission. Available:\n")
 			for _, r := range a.TeamRoles {
 				b.WriteString(fmt.Sprintf("- **%s**: %s\n", r.Name, r.Description))
 			}
-			b.WriteString("\nYou decide autonomously when to delegate. Don't ask the user for permission — just delegate when it makes sense.\n\n")
+			b.WriteString("\n")
 		}
 
-		// Parallel sub-agent guidance
-		b.WriteString("**Parallel execution with Agent tool:**\n")
-		b.WriteString("You have an **Agent** tool that spawns a worker sub-agent to handle a task independently. ")
-		b.WriteString("**When you call multiple Agent tools in the SAME response, they run in parallel automatically.**\n")
-		b.WriteString("**If the user asks for parallel work across independent items, you MUST emit all needed Agent calls in one response instead of waiting for one result before launching the next.**\n")
-		b.WriteString("Worker sub-agents do not recursively orchestrate more Agent/Delegate/Collaborate calls.\n\n")
-		b.WriteString("**You decide autonomously whether to use Agent.** Consider using it when:\n")
-		b.WriteString("- There are many independent files to create or modify, and parallelism would speed things up\n")
-		b.WriteString("- Sub-tasks are complex enough to benefit from isolated context\n")
-		b.WriteString("- The user explicitly requests parallel or concurrent execution\n\n")
-		b.WriteString("**Prefer NOT to use Agent when:**\n")
-		b.WriteString("- Only 1-2 simple files — direct Write/Edit is faster and simpler\n")
-		b.WriteString("- Tasks have dependencies — do them sequentially yourself\n")
-		b.WriteString("- The task is straightforward enough to handle directly\n\n")
-		b.WriteString("**Workflow when you choose to use Agent:**\n")
-		b.WriteString("1. **Gather context first**: Read project structure, reference files, understand patterns.\n")
-		b.WriteString("2. **Plan the work**: Decide the complete code for every file.\n")
-		b.WriteString("3. **Call multiple Agents in ONE response** for true parallelism:\n")
-		b.WriteString("   - Include complete context in each Agent task — sub-agents have no prior knowledge.\n")
-		b.WriteString("   - Group related files per agent (2-5 files each).\n\n")
-
-		b.WriteString("Here are all the tools:\n\n")
+		b.WriteString("**Parallel execution:** Multiple Agent tool calls in the same response run in parallel. Use this for independent tasks.\n\n")
 
 		for _, t := range a.Tools {
 			b.WriteString(fmt.Sprintf("### %s\n%s\n\n", t.Name(), t.Description()))
@@ -176,6 +189,47 @@ func (a *Agent) buildFullSystemPrompt() string {
 	}
 
 	return b.String()
+}
+
+// loadProjectInstructions searches for project-level instruction files and returns their combined content.
+func loadProjectInstructions(cwd string) string {
+	candidates := []string{
+		filepath.Join(cwd, "FUNCODE.md"),
+		filepath.Join(cwd, ".funcode", "AGENTS.md"),
+		filepath.Join(cwd, ".funcode", "instructions.md"),
+	}
+
+	// Also check global instructions
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".funcode", "AGENTS.md"),
+		)
+	}
+
+	var parts []string
+	seen := make(map[string]bool)
+
+	for _, path := range candidates {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			continue
+		}
+		if seen[absPath] {
+			continue
+		}
+		seen[absPath] = true
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content != "" {
+			parts = append(parts, content)
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
 }
 
 func (a *Agent) CloneIsolated(id string) *Agent {
@@ -189,6 +243,7 @@ func (a *Agent) CloneIsolated(id string) *Agent {
 		BaseSystemPrompt: a.BaseSystemPrompt,
 		SystemPrompt:     a.SystemPrompt,
 		TeamRoles:        a.TeamRoles,
+		hintEngine:       NewHintEngine(),
 	}
 }
 
@@ -255,7 +310,8 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 		systemPrompt += "\n\n## Active Skill Context\n\n" + strings.TrimSpace(extraContext)
 	}
 
-	for iterations := 0; iterations < 50; iterations++ { // safety limit
+	const maxIterations = 20
+	for iterations := 0; iterations < maxIterations; iterations++ { // safety limit
 		if err := a.Memory.Compact(ctx, a.Provider, systemPrompt); err != nil {
 			return "", fmt.Errorf("context compaction error: %w", err)
 		}
@@ -365,7 +421,7 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 			a.Memory.Add(assistantMsg)
 		}
 
-		// If no tool calls, we're done
+		// If no tool calls, we're done (unless we detect missed delegation)
 		if len(toolCalls) == 0 {
 			if strings.TrimSpace(response) == "" {
 				if emptyResponseRecoveries < 2 {
@@ -396,6 +452,14 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 				}
 			}
 			emptyResponseRecoveries = 0
+
+			// Check for missed actions: agent described actions but didn't call any tools
+			if hint := a.hintEngine.DetectMissedAction(response, a.TeamRoles); hint != "" {
+				logger.Info("detected missed action, re-entering loop", "agent_id", a.ID)
+				a.Memory.AddHint(hint)
+				continue
+			}
+
 			logger.Info("agent run completed", "agent_id", a.ID, "iterations", iterations+1, "response_len", len(response))
 			return response, nil
 		}
@@ -407,11 +471,22 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 
 		// Add tool results to memory
 		a.Memory.AddToolResults(results)
+
+		// Generate and inject contextual hint
+		if hint := a.hintEngine.GenerateHint(LoopState{
+			Iteration: iterations,
+			ToolCalls: toolCalls,
+			Results:   results,
+			MaxIter:   maxIterations,
+		}); hint != "" {
+			a.Memory.AddHint(hint)
+		}
+
 		messages = a.Memory.Messages()
 	}
 
 	logger.Error("agent exceeded max iterations", "agent_id", a.ID)
-	return "", fmt.Errorf("agent exceeded maximum iterations")
+	return "", fmt.Errorf("agent exceeded maximum iterations (%d)", maxIterations)
 }
 
 // RunStream is like Run but returns immediately and streams via callback

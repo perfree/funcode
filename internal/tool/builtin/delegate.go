@@ -43,19 +43,22 @@ func (t *DelegateTool) Name() string { return "Delegate" }
 func (t *DelegateTool) Description() string {
 	desc := `Delegate a task to another specialist role/agent.
 
-Before delegating, decide whether passing context is actually useful.
+The delegated role will explore the codebase independently using its own tools. Your job is to give a clear, specific task — not to pre-digest the codebase for it.
 
 Guidance:
-  1. If the next role can inspect the project directly, you may delegate with a concise task and let it explore on its own.
-  2. If you already discovered critical constraints, decisions, or file targets, pass only that concise high-value context.
-  3. Do NOT dump long directory trees, large file summaries, or redundant observations unless they are truly necessary.
+  1. Write a specific task with clear deliverables. Say what you need, not how to do it.
+  2. Include depth expectations: "read the key files", "trace the call chain", "review at least N modules".
+  3. If you discovered critical constraints or decisions, pass them as brief context.
+  4. Do NOT dump directory trees, large file contents, or verbose summaries. The delegate can read the code itself.
+  5. For review/analysis tasks, explicitly ask for evidence-based findings with file paths and code references.
 
 Good examples:
-  - "Review the current Go CLI architecture and summarize the main modules."
-  - "Focus on internal/agent and internal/tool. We already know the issue is duplicate delegation output. Propose a fix."
+  - "Review the authentication module in internal/auth/. Read the key source files, trace the login flow end-to-end, and identify security risks. Cite specific code."
+  - "Analyze the database layer in internal/store/. Read at least the main query files and connection management. Report performance issues with line references."
 
-Bad example:
-  - Pasting a huge tree listing and many file summaries when the delegated role can inspect the repo itself
+Bad examples:
+  - "Review the architecture" (too vague, no depth requirement)
+  - Pasting hundreds of lines of file contents when the delegate can read them directly
 
 Available roles to delegate to:
 `

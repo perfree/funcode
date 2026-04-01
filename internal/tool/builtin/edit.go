@@ -25,9 +25,13 @@ func NewEditTool() *EditTool { return &EditTool{} }
 
 func (t *EditTool) Name() string { return "Edit" }
 func (t *EditTool) Description() string {
-	return `Edit a file. Two modes:
-1. String mode: provide old_string + new_string to replace exact text match (old_string must be unique unless replace_all=true).
-2. Line mode: provide line_start + line_end + new_string to replace a range of lines by line number (1-based, inclusive).`
+	return `Edit an existing file. You MUST Read the file first before using this tool.
+
+Two modes:
+1. String mode: provide old_string + new_string to replace an exact text match. old_string must be unique in the file (or set replace_all=true). Include enough surrounding context in old_string to make it unique.
+2. Line mode: provide line_start + line_end + new_string to replace a range of lines (1-based, inclusive).
+
+Prefer Edit over Write for modifying existing files — it's safer and shows exactly what changed.`
 }
 
 func (t *EditTool) Schema() json.RawMessage {

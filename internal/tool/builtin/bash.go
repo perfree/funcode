@@ -23,7 +23,12 @@ func NewBashTool() *BashTool { return &BashTool{} }
 
 func (t *BashTool) Name() string { return "Bash" }
 func (t *BashTool) Description() string {
-	return "Execute a shell command and return its output. Use for running builds, tests, git commands, and other CLI operations."
+	return `Execute a shell command and return its output.
+
+Usage:
+- Use for builds, tests, git operations, package management, and other system commands.
+- Do NOT use Bash for tasks that have dedicated tools: use Read (not cat), Glob (not ls/find), Grep (not grep), Edit (not sed).
+- Set timeout for long-running commands (default: 120 seconds).`
 }
 
 func (t *BashTool) Schema() json.RawMessage {

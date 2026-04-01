@@ -19,7 +19,9 @@ func NewDeleteTool() *DeleteTool { return &DeleteTool{} }
 
 func (t *DeleteTool) Name() string { return "Delete" }
 func (t *DeleteTool) Description() string {
-	return "Delete a file or empty directory at any absolute path. IMPORTANT: Always use Glob or Read first to verify the exact file path before deleting. Never guess file paths."
+	return `Delete a file or empty directory. This is a destructive operation.
+
+IMPORTANT: Always verify the path with Glob or Read first. Never guess file paths when deleting.`
 }
 
 func (t *DeleteTool) Schema() json.RawMessage {

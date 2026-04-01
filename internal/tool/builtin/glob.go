@@ -23,7 +23,13 @@ func NewGlobTool() *GlobTool { return &GlobTool{} }
 
 func (t *GlobTool) Name() string { return "Glob" }
 func (t *GlobTool) Description() string {
-	return "Find files matching a glob pattern. Use to list directory contents (pattern '*') or search for specific files (pattern '**/*.go'). Pass a 'path' to specify the directory to search in."
+	return `Find files matching a glob pattern. Results sorted by modification time (newest first).
+
+Usage:
+- First choice for exploring project structure and finding files by name.
+- Use '*' to list a directory, '**/*.go' to find all Go files recursively, 'src/**/*.ts' to scope to a subdirectory.
+- Pass 'path' to search in a specific directory instead of the working directory.
+- Prefer Glob over Bash with ls/dir/find — it's faster and cross-platform.`
 }
 
 func (t *GlobTool) Schema() json.RawMessage {

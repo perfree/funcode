@@ -21,7 +21,11 @@ func NewWriteTool() *WriteTool { return &WriteTool{} }
 
 func (t *WriteTool) Name() string { return "Write" }
 func (t *WriteTool) Description() string {
-	return "Write content to a file at any absolute path. Creates the file and parent directories if they don't exist, overwrites if it does."
+	return `Create a new file or completely overwrite an existing file. Creates parent directories automatically.
+
+Usage:
+- Use Write to create new files. For modifying existing files, prefer the Edit tool instead.
+- If overwriting an existing file, Read it first to understand what you're replacing.`
 }
 
 func (t *WriteTool) Schema() json.RawMessage {

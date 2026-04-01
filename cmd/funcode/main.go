@@ -321,8 +321,14 @@ func runApp(cmd *cobra.Command, args []string) error {
 
 			delegatedTask := task
 			if strings.TrimSpace(contextText) != "" {
-				delegatedTask = "Use the following known context first. Only inspect the project again if the context below is insufficient.\n\n" + contextText + "\n\nDelegated task:\n" + task
+				delegatedTask = "Known context (use as a starting point, but always verify by reading actual source code):\n\n" + contextText + "\n\nDelegated task:\n" + task
 			}
+			delegatedTask += "\n\n## Delegation Depth Requirements\n" +
+				"- You MUST read actual source code before drawing any conclusions. Never base your analysis solely on context summaries or file names.\n" +
+				"- Read at least the key files relevant to the task. Use Grep to trace how components connect.\n" +
+				"- Provide specific, evidence-based findings with file paths and line references.\n" +
+				"- Do not give generic advice. Every finding or recommendation must reference concrete code you have read.\n" +
+				"- If the task involves review or analysis, read a minimum of 3-5 relevant source files before responding.\n"
 			return subAgent.RunWithContext(ctx, delegatedTask, extraContext)
 		}, roleInfos)
 		if toolAllowed(agentRef.Role.Config.Tools, delegateTool.Name()) {

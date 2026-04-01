@@ -26,7 +26,12 @@ func NewTreeTool() *TreeTool { return &TreeTool{} }
 
 func (t *TreeTool) Name() string { return "Tree" }
 func (t *TreeTool) Description() string {
-	return "Display a directory tree. Use to quickly understand the project structure before opening files."
+	return `Display a directory tree structure.
+
+Usage:
+- Use as a first step to understand a project's layout before diving into specific files.
+- Set max_depth to control how deep to recurse (default: 4). Use dirs_only=true for a high-level overview.
+- After Tree, use Glob or Read to explore specific areas of interest.`
 }
 
 func (t *TreeTool) Schema() json.RawMessage {

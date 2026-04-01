@@ -26,7 +26,14 @@ func NewGrepTool() *GrepTool { return &GrepTool{} }
 
 func (t *GrepTool) Name() string { return "Grep" }
 func (t *GrepTool) Description() string {
-	return "Search file contents using regex patterns. Returns matching lines with file paths and line numbers."
+	return `Search file contents using regex patterns. Returns matching lines with file paths and line numbers.
+
+Usage:
+- Use to trace function calls, find symbol references, search error messages, and follow code flow.
+- Use 'glob' param to filter files (e.g., '*.go' to search only Go files).
+- Use 'context' param to see surrounding lines for better understanding.
+- Prefer Grep over Bash with grep/findstr — it handles cross-platform and binary-safe.
+- When a Grep returns too many results, narrow with a file glob or more specific regex.`
 }
 
 func (t *GrepTool) Schema() json.RawMessage {

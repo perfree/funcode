@@ -74,9 +74,14 @@ func (m *Memory) BuildMessages(input string) []types.Message {
 }
 
 // AddToolResults adds tool results as a message.
+// Very large tool outputs are truncated to prevent context exhaustion.
 func (m *Memory) AddToolResults(results []types.ToolResult) {
+	const maxToolOutputLen = 30000 // ~7500 tokens
 	var content []types.ContentBlock
 	for _, r := range results {
+		if len(r.Content) > maxToolOutputLen {
+			r.Content = r.Content[:maxToolOutputLen] + fmt.Sprintf("\n\n... [output truncated, %d chars omitted]", len(r.Content)-maxToolOutputLen)
+		}
 		content = append(content, types.ContentBlock{
 			Type:       types.ContentTypeToolResult,
 			ToolResult: &r,
@@ -86,6 +91,22 @@ func (m *Memory) AddToolResults(results []types.ToolResult) {
 		Role:    types.RoleTool,
 		Content: content,
 	})
+}
+
+// AddHint injects a system hint as a user message.
+func (m *Memory) AddHint(hint string) {
+	if strings.TrimSpace(hint) == "" {
+		return
+	}
+	m.Add(types.NewTextMessage(types.RoleUser, hint))
+}
+
+// isHintMessage checks if a message is a system hint injection.
+func isHintMessage(msg types.Message) bool {
+	if msg.Role != types.RoleUser || len(msg.Content) != 1 {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(msg.Content[0].Text), "[SYSTEM HINT]")
 }
 
 func (m *Memory) SetHooks(onAdd func(types.Message), onSummaryChange func(string)) {
@@ -229,7 +250,14 @@ func (m *Memory) Compact(ctx context.Context, provider llm.Provider, systemPromp
 	logger.Info("memory compact triggered", "messages", len(m.messages), "estimated_tokens", estimateMessagesTokens(m.Messages()))
 
 	cutoff := len(m.messages) - m.keepRecent
-	older := append([]types.Message(nil), m.messages[:cutoff]...)
+	// Filter out hint messages from older messages — they are transient
+	// and should not be included in the summary.
+	var older []types.Message
+	for _, msg := range m.messages[:cutoff] {
+		if !isHintMessage(msg) {
+			older = append(older, msg)
+		}
+	}
 	recent := append([]types.Message(nil), m.messages[cutoff:]...)
 
 	summary, err := m.compressMessages(ctx, provider, systemPrompt, older)

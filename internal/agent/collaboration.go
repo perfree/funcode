@@ -168,8 +168,9 @@ func dependenciesMet(dependsOn []string, completed map[string]bool) bool {
 func buildCollaborationPrompt(goal string, sharedContext string, task CollaborationTask, all []CollaborationTask) string {
 	var b strings.Builder
 	b.WriteString("You are participating in a multi-role collaboration workflow.\n")
-	b.WriteString("Use the provided known context first. Only inspect the project again if the provided context is insufficient.\n")
-	b.WriteString("Return only the concrete result for your assigned task.\n\n")
+	b.WriteString("You MUST read actual source code and verify facts before drawing conclusions.\n")
+	b.WriteString("The provided context is a starting point — always explore the codebase to build genuine understanding.\n")
+	b.WriteString("Return concrete, evidence-based results for your assigned task with specific file paths and code references.\n\n")
 	b.WriteString("Overall goal:\n")
 	b.WriteString(goal)
 	if strings.TrimSpace(sharedContext) != "" {

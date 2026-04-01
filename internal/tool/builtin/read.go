@@ -23,7 +23,13 @@ func NewReadTool() *ReadTool { return &ReadTool{} }
 
 func (t *ReadTool) Name() string { return "Read" }
 func (t *ReadTool) Description() string {
-	return "Read a file from the filesystem. Accepts any absolute path on the system. Returns the content with line numbers."
+	return `Read a file and return its content with line numbers.
+
+Usage:
+- You MUST Read a file before editing it. Never edit a file you haven't read in this conversation.
+- Use offset and limit for large files — read the relevant section instead of the whole file.
+- Prefer Read over Bash with cat/type — it's faster and shows line numbers.
+- If unsure whether a file exists, use Glob first to verify the path.`
 }
 
 func (t *ReadTool) Schema() json.RawMessage {
