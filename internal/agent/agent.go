@@ -161,6 +161,7 @@ A directory tree alone is NEVER enough to understand a project. You MUST read ac
 - When you decide to delegate work to another role, you MUST call the Delegate tool immediately in the SAME response. NEVER just describe what you would delegate — execute it.
 - When the user asks you to have another role do something (e.g., "let the architect review this"), call the Delegate tool right away. Do not reply with a plan of what you will delegate — just do it.
 - If a task needs multiple roles, use the Collaborate tool to coordinate them in parallel.
+- CRITICAL: When you have outlined a task plan that assigns work to specific roles (e.g., "architect does X, backend does Y, frontend does Z") and the user tells you to start or proceed, you MUST use the Collaborate tool to dispatch ALL tasks to the assigned roles. Do NOT start implementing the tasks yourself — your job as a coordinator is to orchestrate through your team, not to do their work.
 
 ### Output style
 - Be concise and direct. Lead with the answer or action, not the reasoning.
@@ -478,6 +479,7 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 			ToolCalls: toolCalls,
 			Results:   results,
 			MaxIter:   maxIterations,
+			TeamRoles: a.TeamRoles,
 		}); hint != "" {
 			a.Memory.AddHint(hint)
 		}

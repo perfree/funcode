@@ -17,6 +17,7 @@ type HintEngine struct {
 	iteration         int
 	totalErrors       int
 	actionRetried     bool            // prevents infinite re-prompting for missed actions
+	delegateNudged    bool            // prevents repeated should-delegate hints
 	fileModTools      map[string]bool // "Write", "Edit", "Patch"
 }
 
@@ -27,6 +28,7 @@ type LoopState struct {
 	ToolCalls []types.ToolCall
 	Results   []types.ToolResult
 	MaxIter   int
+	TeamRoles []TeamRole // available roles for delegation detection
 }
 
 // NewHintEngine creates a HintEngine with default file-modification tool names.
@@ -73,6 +75,14 @@ func (h *HintEngine) GenerateHint(state LoopState) string {
 	// P2: Verification hint — a file-modifying tool succeeded.
 	if hint := h.verificationHint(state); hint != "" {
 		logger.Debug("hint engine produced verification hint",
+			"iteration", state.Iteration,
+		)
+		return hint
+	}
+
+	// P2.5: Should-delegate hint — agent is doing work it should delegate.
+	if hint := h.shouldDelegateHint(state); hint != "" {
+		logger.Debug("hint engine produced should-delegate hint",
 			"iteration", state.Iteration,
 		)
 		return hint
@@ -205,6 +215,47 @@ func (h *HintEngine) hasFileModification(state LoopState) bool {
 		}
 	}
 	return false
+}
+
+// shouldDelegateHint detects when an agent with team roles is doing implementation
+// work (reading/writing multiple files) instead of delegating to specialists.
+// Fires once per run when the agent uses 3+ "work tools" without any Delegate/Collaborate calls.
+func (h *HintEngine) shouldDelegateHint(state LoopState) string {
+	if h.delegateNudged || len(state.TeamRoles) == 0 {
+		return ""
+	}
+
+	workToolCount := 0
+	hasDelegation := false
+	for _, tc := range state.ToolCalls {
+		switch tc.Name {
+		case "Delegate", "Collaborate":
+			hasDelegation = true
+		case "Read", "Write", "Edit", "Patch", "Bash", "Grep", "Glob":
+			workToolCount++
+		}
+	}
+
+	if hasDelegation || workToolCount < 3 {
+		return ""
+	}
+
+	h.delegateNudged = true
+
+	// Build role list for the hint
+	var roleNames []string
+	for _, r := range state.TeamRoles {
+		roleNames = append(roleNames, r.Name)
+	}
+
+	return fmt.Sprintf(
+		"[SYSTEM HINT] You are using multiple tools to do implementation work yourself, "+
+			"but you have specialist team members available (%s). "+
+			"If you previously outlined a task plan with role assignments, you should be using "+
+			"the Collaborate tool to dispatch those tasks to the appropriate roles instead of doing the work yourself. "+
+			"Call Collaborate now with the tasks you planned.",
+		strings.Join(roleNames, ", "),
+	)
 }
 
 // DetectMissedAction checks if the agent's text response describes actions
