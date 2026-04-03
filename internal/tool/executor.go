@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/perfree/funcode/internal/logger"
 	"github.com/perfree/funcode/pkg/types"
@@ -22,19 +23,53 @@ const (
 // Returns (action, error)
 type ApprovalFunc func(toolName string, params json.RawMessage) (ApprovalAction, error)
 
+// SharedApprovalState holds session-wide approval decisions shared across all Executors.
+type SharedApprovalState struct {
+	mu            sync.RWMutex
+	alwaysAllowed map[string]bool
+}
+
+// NewSharedApprovalState creates a shared approval state for a session.
+func NewSharedApprovalState() *SharedApprovalState {
+	return &SharedApprovalState{
+		alwaysAllowed: make(map[string]bool),
+	}
+}
+
+func (s *SharedApprovalState) IsAllowed(toolName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.alwaysAllowed[toolName]
+}
+
+func (s *SharedApprovalState) SetAllowed(toolName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alwaysAllowed[toolName] = true
+}
+
 // Executor executes tool calls
 type Executor struct {
-	registry      *Registry
-	approvalFn    ApprovalFunc
-	alwaysAllowed map[string]bool // tools permanently allowed for this session
+	registry    *Registry
+	approvalFn  ApprovalFunc
+	sharedState *SharedApprovalState
 }
 
 // NewExecutor creates a new tool executor
 func NewExecutor(registry *Registry, approvalFn ApprovalFunc) *Executor {
 	return &Executor{
-		registry:      registry,
-		approvalFn:    approvalFn,
-		alwaysAllowed: make(map[string]bool),
+		registry:    registry,
+		approvalFn:  approvalFn,
+		sharedState: NewSharedApprovalState(),
+	}
+}
+
+// NewExecutorWithSharedState creates a new tool executor sharing approval state with others.
+func NewExecutorWithSharedState(registry *Registry, approvalFn ApprovalFunc, shared *SharedApprovalState) *Executor {
+	return &Executor{
+		registry:    registry,
+		approvalFn:  approvalFn,
+		sharedState: shared,
 	}
 }
 
@@ -54,7 +89,7 @@ func (e *Executor) Execute(ctx context.Context, call types.ToolCall) types.ToolR
 	params := json.RawMessage(call.Params)
 
 	// Check approval
-	if t.RequiresApproval(params) && !e.alwaysAllowed[call.Name] && e.approvalFn != nil {
+	if t.RequiresApproval(params) && !e.sharedState.IsAllowed(call.Name) && e.approvalFn != nil {
 		logger.Debug("tool requires approval", "tool", call.Name)
 		action, err := e.approvalFn(call.Name, params)
 		if err != nil {
@@ -67,7 +102,7 @@ func (e *Executor) Execute(ctx context.Context, call types.ToolCall) types.ToolR
 		switch action {
 		case ApprovalAlwaysAllow:
 			logger.Info("tool approved (always)", "tool", call.Name)
-			e.alwaysAllowed[call.Name] = true
+			e.sharedState.SetAllowed(call.Name)
 			// fall through to execute
 		case ApprovalDeny:
 			logger.Info("tool denied", "tool", call.Name)
@@ -108,6 +143,11 @@ func (e *Executor) Execute(ctx context.Context, call types.ToolCall) types.ToolR
 // GetTool returns a tool by name from the registry
 func (e *Executor) GetTool(name string) (Tool, error) {
 	return e.registry.Get(name)
+}
+
+// SharedState returns the shared approval state for creating linked executors.
+func (e *Executor) SharedState() *SharedApprovalState {
+	return e.sharedState
 }
 
 // ExecuteAll runs multiple tool calls sequentially

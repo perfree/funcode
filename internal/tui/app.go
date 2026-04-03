@@ -178,6 +178,8 @@ type Model struct {
 	turnEstimatedTokens int
 	turnHasRealUsage    bool
 	liveToolBlocks      []LiveToolBlock
+	queuedInput         string      // user input queued while agent is streaming
+	activeInterruptCh   chan string // channel to send mid-run messages to agent
 }
 
 func New(orchestrator *agent.Orchestrator, modelName string, markdownRender bool, skillManager *skill.Manager) Model {
@@ -306,7 +308,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl+B to toggle expand/collapse all tool results
 		if msg.String() == "ctrl+b" {
 			m.expandTools = !m.expandTools
-			return m, nil
+			// Re-render all transcript messages with new expand state
+			return m, tea.Sequence(
+				tea.ClearScreen,
+				printTranscriptCmd(renderTranscriptMessages(m.theme, m.messages, m.width, m.expandTools, m.markdownRender)),
+			)
 		}
 
 		switch msg.Type {
@@ -425,6 +431,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEnter:
 			if m.streaming {
+				// Send user input to agent mid-run via interrupt channel
+				val := strings.TrimSpace(m.input.Value())
+				if val != "" {
+					m.input.Reset()
+					// Show the message in conversation
+					interruptMsg := ChatMessage{
+						Role: types.RoleUser,
+						Text: val,
+					}
+					m.messages = append(m.messages, interruptMsg)
+					printCmd := printTranscriptCmd(renderTranscriptMessage(m.theme, interruptMsg, m.width, m.expandTools, m.markdownRender))
+
+					// Try to inject into running agent, fall back to queue
+					if m.activeInterruptCh != nil {
+						select {
+						case m.activeInterruptCh <- val:
+							// Sent to agent mid-run
+						default:
+							// Channel full, queue for after completion
+							m.queuedInput = val
+						}
+					} else {
+						m.queuedInput = val
+					}
+					return m, printCmd
+				}
 				return m, nil
 			}
 			m.pendingSubmit = true
@@ -432,20 +464,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, delayedSubmitCmd(m.pendingSubmitSeq)
 
 		default:
+			// Allow typing during streaming (for queued input)
+			if msg.Type == tea.KeyUp && !m.streaming {
+				m.historyUp()
+				return m, nil
+			}
+			if msg.Type == tea.KeyDown && !m.streaming {
+				m.historyDown()
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			cmds = append(cmds, cmd)
+
 			if !m.streaming {
-				if msg.Type == tea.KeyUp {
-					m.historyUp()
-					return m, nil
-				}
-				if msg.Type == tea.KeyDown {
-					m.historyDown()
-					return m, nil
-				}
-
-				var cmd tea.Cmd
-				m.input, cmd = m.input.Update(msg)
-				cmds = append(cmds, cmd)
-
 				// Detect @ typing to show mention popup
 				val := m.input.Value()
 				if strings.HasSuffix(val, "@") || (strings.Contains(val, "@") && !strings.Contains(val, " ")) {
@@ -710,6 +743,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streaming = false
 		m.spinner.Stop()
 		m.input.Focus()
+		m.activeInterruptCh = nil
 		var outMsg ChatMessage
 		if msg.Error != nil {
 			outMsg = ChatMessage{
@@ -738,7 +772,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalMsgs = len(m.messages)
 		m.streamBuf = ""
 		m.lastTurnNeedsSeparator = true
-		return m, m.printAssistantTranscriptCmd(outMsg)
+
+		printCmd := m.printAssistantTranscriptCmd(outMsg)
+
+		// If user queued input while agent was working, auto-submit it now
+		if m.queuedInput != "" {
+			queued := m.queuedInput
+			m.queuedInput = ""
+			m.input.SetValue(queued)
+			m.pendingSubmit = true
+			m.pendingSubmitSeq++
+			return m, tea.Batch(printCmd, delayedSubmitCmd(m.pendingSubmitSeq))
+		}
+
+		return m, printCmd
 
 	case AllAgentDoneMsg:
 		if msg.Usage.TotalTokens <= 0 {
@@ -808,9 +855,14 @@ func (m *Model) startAgent(a *agent.Agent, input string, active *skill.Skill) (M
 	}
 	m.streaming = true
 	m.streamBuf = ""
-	m.input.Blur()
+	// Keep input focused so user can type and queue messages while agent works
 	m.currentRunStartedAt = time.Now()
 	m.resetTurnUsage()
+
+	// Create interrupt channel for mid-run user messages
+	interruptCh := make(chan string, 1)
+	a.InterruptCh = interruptCh
+	m.activeInterruptCh = interruptCh
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
@@ -855,7 +907,7 @@ func (m *Model) handleAllBroadcast(input string) (Model, tea.Cmd) {
 
 	m.streaming = true
 	m.streamBuf = ""
-	m.input.Blur()
+	// Keep input focused so user can type and queue messages while agent works
 	m.allPending = len(agents)
 	m.currentRunStartedAt = time.Now()
 	m.resetTurnUsage()
@@ -1723,7 +1775,7 @@ func isFileToolCall(call types.ToolCall) bool {
 }
 
 func isDelegateToolCall(call types.ToolCall) bool {
-	return call.Name == "Delegate"
+	return call.Name == "Delegate" || call.Name == "Collaborate"
 }
 
 func isAgentToolCall(call types.ToolCall) bool {

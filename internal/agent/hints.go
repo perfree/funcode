@@ -42,6 +42,13 @@ func NewHintEngine() *HintEngine {
 	}
 }
 
+// Reset clears per-run flags so detection works fresh each agent turn.
+func (h *HintEngine) Reset() {
+	h.actionRetried = false
+	h.delegateNudged = false
+	h.consecutiveErrors = 0
+}
+
 // GenerateHint returns a single hint string based on the current loop state.
 // Hints are evaluated in priority order; the first applicable hint wins.
 // Returns "" when no hint is applicable.
@@ -314,12 +321,34 @@ func (h *HintEngine) DetectMissedAction(response string, teamRoles []TeamRole) s
 		"i will trace", "i'll trace", "let me trace",
 		"i will scan", "i'll scan", "let me scan",
 		"first, let me", "let me start by",
-		// Chinese intent phrases
+		// Chinese intent phrases — planning to act
 		"我先", "让我先", "我来先",
 		"我会先", "我将先",
 		"先快速", "先梳理", "先查看", "先读取", "先分析", "先看看", "先了解",
 		"我来看", "我来读", "我来查", "我来分析", "我来梳理", "我来检查",
 		"接下来我", "然后我会",
+		// Chinese intent phrases — acknowledged but didn't act
+		"我先去", "我去收敛", "完成后立即回你", "完成后回你",
+		"继续执行", "继续推进", "持续盯",
+		"下一步就", "下一条就",
+	}
+
+	// --- Check 3: Has team roles but only produced text with future-tense promises ---
+	if len(teamRoles) > 0 {
+		confirmAckPhrases := []string{
+			"如果你同意", "如果你确认", "你同意的话", "等你确认",
+			"if you agree", "if you approve", "shall i proceed",
+			"需要你确认", "等你拍板", "你看行不行",
+		}
+		for _, phrase := range confirmAckPhrases {
+			if strings.Contains(lower, phrase) {
+				h.actionRetried = true
+				logger.Debug("hint engine detected asking-for-confirmation", "phrase", phrase)
+				return "[SYSTEM HINT] You are asking the user for confirmation, but you should NOT. " +
+					"The user already told you to proceed. Call the Delegate tool NOW to dispatch the work. " +
+					"Do not ask for permission — execute immediately."
+			}
+		}
 	}
 
 	for _, phrase := range actionPhrases {

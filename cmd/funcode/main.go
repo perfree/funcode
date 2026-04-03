@@ -160,6 +160,8 @@ func runApp(cmd *cobra.Command, args []string) error {
 
 	// Shared executor for initial agent creation (will be replaced per-agent later)
 	toolExecutor := tool.NewExecutor(toolRegistry, approvalFn)
+	// Shared approval state across all agents — "always allow" applies session-wide
+	sharedApproval := toolExecutor.SharedState()
 
 	// 7. Create Orchestrator and register agents for each role
 	orchestrator := agent.NewOrchestrator()
@@ -326,9 +328,9 @@ func runApp(cmd *cobra.Command, args []string) error {
 			delegatedTask += "\n\n## Delegation Depth Requirements\n" +
 				"- You MUST read actual source code before drawing any conclusions. Never base your analysis solely on context summaries or file names.\n" +
 				"- Read at least the key files relevant to the task. Use Grep to trace how components connect.\n" +
-				"- Provide specific, evidence-based findings with file paths and line references.\n" +
-				"- Do not give generic advice. Every finding or recommendation must reference concrete code you have read.\n" +
-				"- If the task involves review or analysis, read a minimum of 3-5 relevant source files before responding.\n"
+				"- If the task requires code changes: READ the files, then WRITE/EDIT them. Deliver working code, not just a plan.\n" +
+				"- If the task is review/analysis: provide specific findings with file paths and line references.\n" +
+				"- Do not just describe what you would do — actually do it using the tools available to you.\n"
 			return subAgent.RunWithContext(ctx, delegatedTask, extraContext)
 		}, roleInfos)
 		if toolAllowed(agentRef.Role.Config.Tools, delegateTool.Name()) {
@@ -339,6 +341,39 @@ func runApp(cmd *cobra.Command, args []string) error {
 		collaborateTool := builtin.NewCollaborateTool(func(ctx context.Context, plan agent.CollaborationPlan) (*agent.CollaborationResult, error) {
 			plan.ExtraContext = agentRef.CurrentExtraContext()
 			manager := agent.NewCollaborationManager(orchestrator)
+
+			// Pass parent call ID so TUI can associate activity with the Collaborate tool block
+			parentCallID := tool.CallIDFromContext(ctx)
+			manager.SetParentCallID(parentCallID)
+
+			// Wire up TUI callbacks so collaboration tasks show live activity
+			if pRef.P != nil && parentCallID != "" {
+				manager.SetCallbacks(&agent.CollaborationCallbacks{
+					OnSubAgentStream: func(pid string, rn string, event types.StreamEvent) {
+						pRef.P.Send(tui.DelegateStreamMsg{
+							ParentCallID: pid,
+							RoleName:     rn,
+							Event:        event,
+						})
+					},
+					OnSubAgentToolCall: func(pid string, rn string, call types.ToolCall) {
+						pRef.P.Send(tui.DelegateActivityMsg{
+							ParentCallID: pid,
+							RoleName:     rn,
+							Call:         call,
+						})
+					},
+					OnSubAgentToolResult: func(pid string, rn string, call types.ToolCall, result types.ToolResult) {
+						pRef.P.Send(tui.DelegateActivityMsg{
+							ParentCallID: pid,
+							RoleName:     rn,
+							Call:         call,
+							Result:       &result,
+						})
+					},
+				})
+			}
+
 			return manager.Execute(ctx, plan)
 		}, roleInfos)
 		if toolAllowed(agentRef.Role.Config.Tools, collaborateTool.Name()) {
@@ -386,8 +421,8 @@ func runApp(cmd *cobra.Command, args []string) error {
 			agentRef.Tools = append(agentRef.Tools, subAgentTool)
 		}
 
-		// Give this agent its own executor with the agent-specific registry
-		agentExecutor := tool.NewExecutor(agentRegistry, approvalFn)
+		// Give this agent its own executor with the agent-specific registry, sharing session-wide approval state
+		agentExecutor := tool.NewExecutorWithSharedState(agentRegistry, approvalFn, sharedApproval)
 		agentRef.ToolExecutor = agentExecutor
 		agentRef.RefreshSystemPrompt()
 	}

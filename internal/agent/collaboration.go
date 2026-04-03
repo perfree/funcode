@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/perfree/funcode/internal/logger"
+	"github.com/perfree/funcode/pkg/types"
 )
 
 type CollaborationTaskStatus string
@@ -46,12 +47,29 @@ type CollaborationResult struct {
 	Succeeded bool
 }
 
+// CollaborationCallbacks holds optional TUI callbacks for collaboration sub-agents.
+type CollaborationCallbacks struct {
+	OnSubAgentStream     func(parentCallID string, roleName string, event types.StreamEvent)
+	OnSubAgentToolCall   func(parentCallID string, roleName string, call types.ToolCall)
+	OnSubAgentToolResult func(parentCallID string, roleName string, call types.ToolCall, result types.ToolResult)
+}
+
 type CollaborationManager struct {
 	orchestrator *Orchestrator
+	parentCallID string
+	callbacks    *CollaborationCallbacks
 }
 
 func NewCollaborationManager(orchestrator *Orchestrator) *CollaborationManager {
 	return &CollaborationManager{orchestrator: orchestrator}
+}
+
+func (m *CollaborationManager) SetParentCallID(callID string) {
+	m.parentCallID = callID
+}
+
+func (m *CollaborationManager) SetCallbacks(cb *CollaborationCallbacks) {
+	m.callbacks = cb
 }
 
 func (m *CollaborationManager) Execute(ctx context.Context, plan CollaborationPlan) (*CollaborationResult, error) {
@@ -117,6 +135,32 @@ func (m *CollaborationManager) Execute(ctx context.Context, plan CollaborationPl
 				}
 
 				subAgent := agent.CloneWorker("collab_" + task.ID)
+
+				// Wire up TUI callbacks so collaboration activity is visible
+				if m.callbacks != nil && m.parentCallID != "" {
+					cb := m.callbacks
+					parentID := m.parentCallID
+					roleName := task.Role
+					if task.Title != "" {
+						roleName = task.Role + ": " + task.Title
+					}
+					subAgent.OnStream = func(event types.StreamEvent) {
+						if cb.OnSubAgentStream != nil {
+							cb.OnSubAgentStream(parentID, roleName, event)
+						}
+					}
+					subAgent.OnToolCall = func(call types.ToolCall) {
+						if cb.OnSubAgentToolCall != nil {
+							cb.OnSubAgentToolCall(parentID, roleName, call)
+						}
+					}
+					subAgent.OnToolResult = func(call types.ToolCall, result types.ToolResult) {
+						if cb.OnSubAgentToolResult != nil {
+							cb.OnSubAgentToolResult(parentID, roleName, call, result)
+						}
+					}
+				}
+
 				output, err := subAgent.RunWithContext(ctx, readyPrompts[task.ID], plan.ExtraContext)
 				task.CompletedAt = time.Now()
 				if err != nil {
@@ -167,10 +211,13 @@ func dependenciesMet(dependsOn []string, completed map[string]bool) bool {
 
 func buildCollaborationPrompt(goal string, sharedContext string, task CollaborationTask, all []CollaborationTask) string {
 	var b strings.Builder
-	b.WriteString("You are participating in a multi-role collaboration workflow.\n")
-	b.WriteString("You MUST read actual source code and verify facts before drawing conclusions.\n")
-	b.WriteString("The provided context is a starting point — always explore the codebase to build genuine understanding.\n")
-	b.WriteString("Return concrete, evidence-based results for your assigned task with specific file paths and code references.\n\n")
+	b.WriteString("You are participating in a multi-role collaboration workflow.\n\n")
+	b.WriteString("CRITICAL RULES:\n")
+	b.WriteString("- Your job is to EXECUTE the assigned task, not just analyze or plan it.\n")
+	b.WriteString("- If the task involves code changes: READ the relevant files, then WRITE/EDIT them. Deliver working code.\n")
+	b.WriteString("- If the task involves design/architecture: READ the code first, then produce a concrete specification with exact file paths, function signatures, and data structures.\n")
+	b.WriteString("- Do NOT just list files or describe what you would do. Actually do it.\n")
+	b.WriteString("- Explore the codebase to understand it, then make the required changes.\n\n")
 	b.WriteString("Overall goal:\n")
 	b.WriteString(goal)
 	if strings.TrimSpace(sharedContext) != "" {

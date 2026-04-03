@@ -43,6 +43,9 @@ type Agent struct {
 
 	hintEngine *HintEngine
 
+	// InterruptCh receives user messages mid-run, injected between tool calls
+	InterruptCh chan string
+
 	runtimeMu          sync.RWMutex
 	activeExtraContext string
 }
@@ -157,11 +160,15 @@ A directory tree alone is NEVER enough to understand a project. You MUST read ac
 - Be careful with destructive operations (delete, overwrite, force-push). Verify paths with Glob/Read first.
 - When an error occurs, read the error message and diagnose the root cause. Don't blindly retry the same action.
 
-### Delegation — act, don't describe
+### Delegation — act, don't describe, don't ask
+- NEVER ask "如果你同意", "需要你确认", "shall I proceed" or any variation. The user's instruction IS the confirmation. Just execute.
+- NEVER ask for confirmation before delegating. When the user says "安排下去", "开始", "开工", "go ahead", "可以" — that IS the confirmation. Call Delegate immediately.
 - When you decide to delegate work to another role, you MUST call the Delegate tool immediately in the SAME response. NEVER just describe what you would delegate — execute it.
-- When the user asks you to have another role do something (e.g., "let the architect review this"), call the Delegate tool right away. Do not reply with a plan of what you will delegate — just do it.
-- If a task needs multiple roles, use the Collaborate tool to coordinate them in parallel.
-- CRITICAL: When you have outlined a task plan that assigns work to specific roles (e.g., "architect does X, backend does Y, frontend does Z") and the user tells you to start or proceed, you MUST use the Collaborate tool to dispatch ALL tasks to the assigned roles. Do NOT start implementing the tasks yourself — your job as a coordinator is to orchestrate through your team, not to do their work.
+- When the user asks you to have another role do something (e.g., "let the architect review this"), call the Delegate tool right away.
+- For parallel execution across multiple roles: call MULTIPLE Delegate tools in the SAME response (one per role). They will run in parallel automatically. Each Delegate call shows as a separate progress block in the UI.
+- CRITICAL: When you have outlined a task plan that assigns work to specific roles and the user tells you to start, you MUST call one Delegate per role in the SAME response. Do NOT use Collaborate — use multiple parallel Delegate calls so each role's progress is visible separately.
+- When the user confirms or approves your plan (e.g., "可以", "好", "ok", "go ahead"), and there is pending work, you MUST immediately call Delegate tools to execute that work. Do NOT just acknowledge the approval — dispatch the actual work NOW.
+- Delegation tasks must be ACTION-ORIENTED: tell the delegate to "implement X", "fix Y", "write the code for Z" — not just "review" or "analyze" unless that is specifically what is needed.
 
 ### Output style
 - Be concise and direct. Lead with the answer or action, not the reasoning.
@@ -175,14 +182,14 @@ A directory tree alone is NEVER enough to understand a project. You MUST read ac
 
 		// Team delegation
 		if len(a.TeamRoles) > 0 {
-			b.WriteString("**Team:** You can Delegate to specialist roles. Delegate directly when another role is more appropriate — don't ask permission. Available:\n")
+			b.WriteString("**Team:** You can Delegate to specialist roles. Delegate directly — don't ask permission, don't ask for confirmation. Available:\n")
 			for _, r := range a.TeamRoles {
 				b.WriteString(fmt.Sprintf("- **%s**: %s\n", r.Name, r.Description))
 			}
 			b.WriteString("\n")
 		}
 
-		b.WriteString("**Parallel execution:** Multiple Agent tool calls in the same response run in parallel. Use this for independent tasks.\n\n")
+		b.WriteString("**Parallel execution:** Multiple Delegate calls in the same response run in parallel — each shows as a separate progress block. Use this for dispatching work to multiple roles simultaneously.\n\n")
 
 		for _, t := range a.Tools {
 			b.WriteString(fmt.Sprintf("### %s\n%s\n\n", t.Name(), t.Description()))
@@ -296,6 +303,9 @@ func (a *Agent) Run(ctx context.Context, input string) (string, error) {
 func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext string) (string, error) {
 	restoreExtraContext := a.setActiveExtraContext(extraContext)
 	defer restoreExtraContext()
+
+	// Reset per-run hint flags so detection works fresh each turn
+	a.hintEngine.Reset()
 
 	inputPreview := input
 	if len(inputPreview) > 100 {
@@ -484,6 +494,19 @@ func (a *Agent) RunWithContext(ctx context.Context, input string, extraContext s
 			a.Memory.AddHint(hint)
 		}
 
+		// Check for mid-run user messages (non-blocking)
+		if a.InterruptCh != nil {
+			select {
+			case userMsg := <-a.InterruptCh:
+				if strings.TrimSpace(userMsg) != "" {
+					logger.Info("mid-run user message received", "agent_id", a.ID, "msg_preview", userMsg)
+					a.Memory.Add(types.NewTextMessage(types.RoleUser, userMsg))
+				}
+			default:
+				// No message queued, continue normally
+			}
+		}
+
 		messages = a.Memory.Messages()
 	}
 
@@ -564,12 +587,8 @@ func (a *Agent) mustRunSerial(call types.ToolCall) bool {
 	if a.needsApproval(call) {
 		return true
 	}
-	switch call.Name {
-	case "Delegate":
-		return true
-	default:
-		return false
-	}
+	// Delegate and Collaborate run in parallel to enable concurrent multi-role execution
+	return false
 }
 
 // processStream reads the stream and collects text + tool calls
